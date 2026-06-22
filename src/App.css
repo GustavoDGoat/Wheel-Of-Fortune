@@ -1,0 +1,10 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    /* Enforces the dark B&W aesthetic globally */
+    @apply bg-black text-gray-100 m-0 overflow-hidden font-sans;
+  }
+}
