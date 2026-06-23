@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
-import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener"; // <-- The updated v2 OS bridge!
 
 function App() {
   // --- NAVIGATION STATE ---
@@ -12,7 +13,6 @@ function App() {
   const [sourceFile, setSourceFile] = useState("");
   const [vaultFolder, setVaultFolder] = useState("/home/WheelOfFortune_Vault");
   const [importMessage, setImportMessage] = useState("");
-  const [activeMedia, setActiveMedia] = useState<string | null>(null);
 
   // --- CLOUD STATE ---
   const [linkTitle, setLinkTitle] = useState("");
@@ -72,6 +72,7 @@ function App() {
       });
       setImportMessage(`Success! Safely vaulted at: ${newPath}`);
       setSourceFile("");
+
       const dbFiles: VaultFile[] = await invoke("get_vault_files");
       setVaultFiles(dbFiles);
     } catch (err) {
@@ -79,22 +80,24 @@ function App() {
     }
   }
 
-  // --- DELETION FUNCTION ---
   async function handleDeleteVaultFile(id: number, filePath: string) {
     try {
-      // 1. Tell Rust to destroy the file and the database record
       await invoke("delete_vault_file", { id, filePath });
-
-      // 2. Remove it from the React UI instantly
       setVaultFiles(vaultFiles.filter((file) => file.id !== id));
-
-      // 3. Close the player if the deleted file was currently playing
-      if (activeMedia === filePath) {
-        setActiveMedia(null);
-      }
     } catch (err) {
       console.error("Failed to delete file:", err);
       alert(`Could not delete file: ${err}`);
+    }
+  }
+
+  // --- THE NATIVE OS LAUNCHER FUNCTION ---
+  async function handleOpenFile(filePath: string) {
+    try {
+      // Tells your Linux OS to open the file with the user's default app
+      await openPath(filePath);
+    } catch (err) {
+      console.error("Failed to launch OS app:", err);
+      alert(`Could not open file: ${err}`);
     }
   }
 
@@ -114,14 +117,13 @@ function App() {
     }
   }
 
-  // --- HELPER FUNCTION ---
-  function getMediaType(filePath: string) {
-    const ext = filePath.split(".").pop()?.toLowerCase();
-    if (["mp4", "webm", "ogg"].includes(ext || "")) return "video";
-    if (["mp3", "wav", "flac"].includes(ext || "")) return "audio";
-    if (["jpg", "jpeg", "png", "gif", "webp"].includes(ext || ""))
-      return "image";
-    return "unknown";
+  // Opens web URLs in the default browser
+  async function handleOpenUrl(url: string) {
+    try {
+      await openUrl(url);
+    } catch (err) {
+      console.error("Failed to open browser:", err);
+    }
   }
 
   return (
@@ -131,14 +133,6 @@ function App() {
         <h1 className="text-2xl font-bold tracking-widest text-white uppercase">
           Wheel of Fortune
         </h1>
-        {activeMedia && (
-          <button
-            onClick={() => setActiveMedia(null)}
-            className="text-sm bg-white text-black px-4 py-1 rounded font-bold uppercase hover:bg-gray-300"
-          >
-            Close Player
-          </button>
-        )}
       </header>
 
       <div className="flex flex-1 overflow-hidden">
@@ -146,26 +140,20 @@ function App() {
         <aside className="w-64 border-r border-gray-800 bg-gray-950 p-4 flex flex-col">
           <nav className="flex flex-col space-y-2">
             <button
-              onClick={() => {
-                setActiveTab("local");
-                setActiveMedia(null);
-              }}
+              onClick={() => setActiveTab("local")}
               className={`text-left px-3 py-2 rounded focus:outline-none transition-colors ${activeTab === "local" ? "bg-gray-900 text-white" : "text-gray-400 hover:bg-gray-900 hover:text-white"}`}
             >
               Local Storage
             </button>
             <button
-              onClick={() => {
-                setActiveTab("cloud");
-                setActiveMedia(null);
-              }}
+              onClick={() => setActiveTab("cloud")}
               className={`text-left px-3 py-2 rounded focus:outline-none transition-colors ${activeTab === "cloud" ? "bg-gray-900 text-white" : "text-gray-400 hover:bg-gray-900 hover:text-white"}`}
             >
               Cloud Links
             </button>
           </nav>
 
-          {/* VAULT MEMORY DEBUGGER (WITH DELETION) */}
+          {/* VAULT MEMORY DEBUGGER (WITH OS LAUNCHER) */}
           <div className="mt-8 pt-4 border-t border-gray-800 flex-1 overflow-y-auto">
             <p className="text-xs text-gray-500 uppercase tracking-widest mb-2">
               Vault Memory
@@ -178,7 +166,7 @@ function App() {
                 >
                   <span
                     className="truncate flex-1"
-                    onClick={() => setActiveMedia(file.file_path)}
+                    onClick={() => handleOpenFile(file.file_path)}
                     title={file.file_path}
                   >
                     {file.file_name}
@@ -201,38 +189,7 @@ function App() {
 
         {/* MAIN CONTENT AREA */}
         <main className="flex-1 bg-black p-8 flex flex-col items-center overflow-y-auto">
-          {activeMedia ? (
-            // --- PLAYER UI ---
-            <div className="w-full h-full flex flex-col items-center justify-center">
-              <h2 className="text-gray-500 uppercase tracking-widest text-xs mb-4 truncate w-full text-center">
-                Playing: {activeMedia}
-              </h2>
-              <div className="border border-gray-800 bg-gray-950 p-2 rounded shadow-2xl max-w-4xl w-full">
-                {getMediaType(activeMedia) === "video" && (
-                  <video
-                    controls
-                    autoPlay
-                    src={convertFileSrc(activeMedia)}
-                    className="w-full h-auto rounded"
-                  />
-                )}
-                {getMediaType(activeMedia) === "audio" && (
-                  <audio
-                    controls
-                    autoPlay
-                    src={convertFileSrc(activeMedia)}
-                    className="w-full"
-                  />
-                )}
-                {getMediaType(activeMedia) === "image" && (
-                  <img
-                    src={convertFileSrc(activeMedia)}
-                    className="max-h-[70vh] object-contain mx-auto rounded"
-                  />
-                )}
-              </div>
-            </div>
-          ) : activeTab === "local" ? (
+          {activeTab === "local" ? (
             // --- LOCAL SCANNER & IMPORT UI ---
             <>
               <div className="w-full max-w-2xl text-left border-b border-gray-800 pb-8 mb-8">
@@ -262,7 +219,7 @@ function App() {
                   {files.map((file, index) => (
                     <li
                       key={index}
-                      onClick={() => setActiveMedia(file)}
+                      onClick={() => handleOpenFile(file)}
                       className="text-gray-400 text-xs bg-gray-900 p-2 rounded truncate border border-gray-800 cursor-pointer hover:bg-white hover:text-black"
                     >
                       ▶ {file}
@@ -375,17 +332,13 @@ function App() {
                   cloudLinks.map((link) => (
                     <li
                       key={link.id}
-                      className="bg-gray-900 border border-gray-800 p-4 rounded flex flex-col"
+                      className="bg-gray-900 border border-gray-800 p-4 rounded flex flex-col cursor-pointer hover:bg-gray-800 transition-colors"
+                      onClick={() => handleOpenUrl(link.url)}
                     >
                       <span className="text-white font-bold">{link.title}</span>
-                      <a
-                        href={link.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-gray-500 text-xs truncate hover:text-white transition-colors mt-1"
-                      >
+                      <span className="text-gray-500 text-xs truncate mt-1">
                         {link.url}
-                      </a>
+                      </span>
                     </li>
                   ))
                 )}
