@@ -2,6 +2,7 @@ use serde::Serialize;
 use sqlx::Row;
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 use std::fs;
+use std::io::copy;
 use std::path::Path; //it allows me to upload files to the paht i want
 use tauri::Manager;
 
@@ -199,6 +200,25 @@ async fn delete_vault_file(
         Ok(_) => Ok("File permanently deleted.".to_string()),
         Err(e) => Err(format!("Failed to delete from database: {}", e)),
     }
+}
+
+#[tauri::command]
+async fn download_to_vault(
+    url: String,
+    filename: String,
+    destination: String,
+) -> Result<String, String> {
+    let dest_path = Path::new(&destination).join(&filename);
+
+    // 1. Fetch the file
+    let mut response = reqwest::blocking::get(&url).map_err(|e| e.to_string())?;
+
+    // 2. Create the file and copy the stream
+    let mut file = fs::File::create(&dest_path).map_err(|e| e.to_string())?;
+    copy(&mut response, &mut file).map_err(|e| e.to_string())?;
+
+    // 3. Return the local path so you can register it in your DB
+    Ok(dest_path.to_string_lossy().to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

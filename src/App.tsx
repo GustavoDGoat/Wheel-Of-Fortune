@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { openPath, openUrl } from "@tauri-apps/plugin-opener"; // <-- The updated v2 OS bridge!
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 
 function App() {
   // --- NAVIGATION STATE ---
@@ -40,7 +40,6 @@ function App() {
       try {
         const dbFiles: VaultFile[] = await invoke("get_vault_files");
         setVaultFiles(dbFiles);
-
         const dbLinks: CloudLink[] = await invoke("get_cloud_links");
         setCloudLinks(dbLinks);
       } catch (err) {
@@ -50,7 +49,7 @@ function App() {
     loadDatabase();
   }, []);
 
-  // --- LOCAL FUNCTIONS ---
+  // --- LOCAL ACTIONS ---
   async function scanFolder() {
     setScanError("");
     try {
@@ -72,7 +71,6 @@ function App() {
       });
       setImportMessage(`Success! Safely vaulted at: ${newPath}`);
       setSourceFile("");
-
       const dbFiles: VaultFile[] = await invoke("get_vault_files");
       setVaultFiles(dbFiles);
     } catch (err) {
@@ -85,31 +83,18 @@ function App() {
       await invoke("delete_vault_file", { id, filePath });
       setVaultFiles(vaultFiles.filter((file) => file.id !== id));
     } catch (err) {
-      console.error("Failed to delete file:", err);
       alert(`Could not delete file: ${err}`);
     }
   }
 
-  // --- THE NATIVE OS LAUNCHER FUNCTION ---
-  async function handleOpenFile(filePath: string) {
-    try {
-      // Tells your Linux OS to open the file with the user's default app
-      await openPath(filePath);
-    } catch (err) {
-      console.error("Failed to launch OS app:", err);
-      alert(`Could not open file: ${err}`);
-    }
-  }
-
-  // --- CLOUD FUNCTIONS ---
+  // --- CLOUD ACTIONS ---
   async function handleSaveLink() {
-    setCloudMessage("Saving...");
+    setCloudMessage("Saving link...");
     try {
       await invoke("add_cloud_link", { title: linkTitle, url: linkUrl });
-      setCloudMessage("Success! Link locked in the vault.");
+      setCloudMessage("Link saved.");
       setLinkTitle("");
       setLinkUrl("");
-
       const dbLinks: CloudLink[] = await invoke("get_cloud_links");
       setCloudLinks(dbLinks);
     } catch (err) {
@@ -117,18 +102,28 @@ function App() {
     }
   }
 
-  // Opens web URLs in the default browser
-  async function handleOpenUrl(url: string) {
+  // The Cloud-to-Vault Bridge
+  async function handleTransfer(url: string, title: string) {
+    setCloudMessage("Transferring to Vault...");
     try {
-      await openUrl(url);
+      // 1. Download and get the local path
+      const localPath: string = await invoke("download_to_vault", {
+        url,
+        filename: `${title.replace(/\s+/g, "_")}.download`,
+        destination: vaultFolder,
+      });
+
+      // 2. Refresh lists
+      setCloudMessage(`Success! Vaulted at: ${localPath}`);
+      const dbFiles: VaultFile[] = await invoke("get_vault_files");
+      setVaultFiles(dbFiles);
     } catch (err) {
-      console.error("Failed to open browser:", err);
+      setCloudMessage(`Transfer Failed: ${err}`);
     }
   }
 
   return (
     <div className="flex h-screen w-full flex-col">
-      {/* HEADER */}
       <header className="border-b border-gray-800 bg-black p-4 flex justify-between items-center">
         <h1 className="text-2xl font-bold tracking-widest text-white uppercase">
           Wheel of Fortune
@@ -136,24 +131,22 @@ function App() {
       </header>
 
       <div className="flex flex-1 overflow-hidden">
-        {/* SIDEBAR */}
         <aside className="w-64 border-r border-gray-800 bg-gray-950 p-4 flex flex-col">
           <nav className="flex flex-col space-y-2">
             <button
               onClick={() => setActiveTab("local")}
-              className={`text-left px-3 py-2 rounded focus:outline-none transition-colors ${activeTab === "local" ? "bg-gray-900 text-white" : "text-gray-400 hover:bg-gray-900 hover:text-white"}`}
+              className={`text-left px-3 py-2 rounded ${activeTab === "local" ? "bg-gray-900 text-white" : "text-gray-400"}`}
             >
               Local Storage
             </button>
             <button
               onClick={() => setActiveTab("cloud")}
-              className={`text-left px-3 py-2 rounded focus:outline-none transition-colors ${activeTab === "cloud" ? "bg-gray-900 text-white" : "text-gray-400 hover:bg-gray-900 hover:text-white"}`}
+              className={`text-left px-3 py-2 rounded ${activeTab === "cloud" ? "bg-gray-900 text-white" : "text-gray-400"}`}
             >
               Cloud Links
             </button>
           </nav>
 
-          {/* VAULT MEMORY DEBUGGER (WITH OS LAUNCHER) */}
           <div className="mt-8 pt-4 border-t border-gray-800 flex-1 overflow-y-auto">
             <p className="text-xs text-gray-500 uppercase tracking-widest mb-2">
               Vault Memory
@@ -162,22 +155,19 @@ function App() {
               {vaultFiles.map((file) => (
                 <li
                   key={file.id}
-                  className="flex justify-between items-center group text-gray-400 text-xs hover:text-white cursor-pointer transition-colors p-1 rounded hover:bg-gray-900"
+                  className="flex justify-between items-center group text-gray-400 text-xs p-1 rounded hover:bg-gray-900"
                 >
                   <span
-                    className="truncate flex-1"
-                    onClick={() => handleOpenFile(file.file_path)}
-                    title={file.file_path}
+                    className="truncate flex-1 cursor-pointer hover:text-white"
+                    onClick={() => openPath(file.file_path)}
                   >
                     {file.file_name}
                   </span>
                   <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDeleteVaultFile(file.id, file.file_path);
-                    }}
-                    className="opacity-0 group-hover:opacity-100 text-red-500 hover:text-red-400 px-2 font-bold transition-opacity"
-                    title="Delete permanently"
+                    onClick={() =>
+                      handleDeleteVaultFile(file.id, file.file_path)
+                    }
+                    className="opacity-0 group-hover:opacity-100 text-red-500"
                   >
                     ✕
                   </button>
@@ -187,12 +177,10 @@ function App() {
           </div>
         </aside>
 
-        {/* MAIN CONTENT AREA */}
-        <main className="flex-1 bg-black p-8 flex flex-col items-center overflow-y-auto">
+        <main className="flex-1 bg-black p-8 overflow-y-auto">
           {activeTab === "local" ? (
-            // --- LOCAL SCANNER & IMPORT UI ---
             <>
-              <div className="w-full max-w-2xl text-left border-b border-gray-800 pb-8 mb-8">
+              <div className="w-full max-w-2xl border-b border-gray-800 pb-8 mb-8">
                 <h2 className="text-white font-bold tracking-widest uppercase mb-4">
                   1. Scan Directory
                 </h2>
@@ -201,147 +189,99 @@ function App() {
                     type="text"
                     value={folderPath}
                     onChange={(e) => setFolderPath(e.target.value)}
-                    className="flex-1 bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded focus:outline-none focus:border-gray-500"
+                    className="flex-1 bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded"
                   />
                   <button
                     onClick={scanFolder}
-                    className="bg-white text-black px-6 py-2 rounded font-bold hover:bg-gray-200"
+                    className="bg-white text-black px-6 py-2 rounded font-bold"
                   >
                     SCAN
                   </button>
                 </div>
-                {scanError && (
-                  <div className="text-red-500 text-sm mb-4">
-                    Error: {scanError}
-                  </div>
-                )}
-                <ul className="space-y-2 max-h-40 overflow-y-auto pr-2">
-                  {files.map((file, index) => (
+                <ul className="space-y-2 max-h-40 overflow-y-auto">
+                  {files.map((file, i) => (
                     <li
-                      key={index}
-                      onClick={() => handleOpenFile(file)}
-                      className="text-gray-400 text-xs bg-gray-900 p-2 rounded truncate border border-gray-800 cursor-pointer hover:bg-white hover:text-black"
+                      key={i}
+                      onClick={() => openPath(file)}
+                      className="text-gray-400 text-xs bg-gray-900 p-2 rounded cursor-pointer hover:text-white"
                     >
                       ▶ {file}
                     </li>
                   ))}
                 </ul>
               </div>
-
-              <div className="w-full max-w-2xl text-left">
+              <div className="w-full max-w-2xl">
                 <h2 className="text-white font-bold tracking-widest uppercase mb-4">
                   2. Import to Vault
                 </h2>
-                <div className="flex flex-col space-y-4 mb-4">
-                  <div>
-                    <label className="text-gray-500 text-xs uppercase tracking-widest mb-1 block">
-                      Target File (Source)
-                    </label>
-                    <input
-                      type="text"
-                      value={sourceFile}
-                      onChange={(e) => setSourceFile(e.target.value)}
-                      className="w-full bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-gray-500 text-xs uppercase tracking-widest mb-1 block">
-                      Vault Location (Destination)
-                    </label>
-                    <input
-                      type="text"
-                      value={vaultFolder}
-                      onChange={(e) => setVaultFolder(e.target.value)}
-                      className="w-full bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded"
-                    />
-                  </div>
-                </div>
+                <input
+                  type="text"
+                  value={sourceFile}
+                  onChange={(e) => setSourceFile(e.target.value)}
+                  placeholder="Source Path"
+                  className="w-full bg-gray-900 border border-gray-700 text-white px-4 py-2 mb-2 rounded"
+                />
                 <button
                   onClick={handleImport}
-                  className="w-full bg-white text-black px-6 py-3 rounded font-bold tracking-widest hover:bg-gray-200 uppercase"
+                  className="w-full bg-white text-black py-3 rounded font-bold uppercase"
                 >
                   Execute Import
                 </button>
                 {importMessage && (
-                  <div
-                    className={`mt-4 p-4 rounded text-sm ${importMessage.startsWith("Error") ? "bg-red-950/30 text-red-500 border border-red-900" : "bg-gray-900 text-white border border-gray-700"}`}
-                  >
-                    {importMessage}
-                  </div>
+                  <p className="mt-4 text-sm text-gray-400">{importMessage}</p>
                 )}
               </div>
             </>
           ) : (
-            // --- CLOUD LINKS UI ---
-            <div className="w-full max-w-2xl text-left">
-              <h2 className="text-white font-bold tracking-widest uppercase mb-4 border-b border-gray-800 pb-2">
+            <div className="w-full max-w-2xl">
+              <h2 className="text-white font-bold tracking-widest uppercase mb-4">
                 Add Cloud Link
               </h2>
-
-              <div className="flex flex-col space-y-4 mb-6">
-                <div>
-                  <label className="text-gray-500 text-xs uppercase tracking-widest mb-1 block">
-                    Link Title
-                  </label>
-                  <input
-                    type="text"
-                    value={linkTitle}
-                    onChange={(e) => setLinkTitle(e.target.value)}
-                    placeholder="e.g., Match Highlights"
-                    className="w-full bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded focus:outline-none focus:border-gray-500"
-                  />
-                </div>
-                <div>
-                  <label className="text-gray-500 text-xs uppercase tracking-widest mb-1 block">
-                    URL
-                  </label>
-                  <input
-                    type="text"
-                    value={linkUrl}
-                    onChange={(e) => setLinkUrl(e.target.value)}
-                    placeholder="https://youtube.com/..."
-                    className="w-full bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded focus:outline-none focus:border-gray-500"
-                  />
-                </div>
-              </div>
-
+              <input
+                type="text"
+                value={linkTitle}
+                onChange={(e) => setLinkTitle(e.target.value)}
+                placeholder="Title"
+                className="w-full bg-gray-900 border border-gray-700 text-white px-4 py-2 mb-2 rounded"
+              />
+              <input
+                type="text"
+                value={linkUrl}
+                onChange={(e) => setLinkUrl(e.target.value)}
+                placeholder="URL"
+                className="w-full bg-gray-900 border border-gray-700 text-white px-4 py-2 mb-4 rounded"
+              />
               <button
                 onClick={handleSaveLink}
-                className="w-full bg-white text-black px-6 py-3 rounded font-bold tracking-widest hover:bg-gray-200 transition-colors uppercase mb-8"
+                className="w-full bg-white text-black py-3 rounded font-bold uppercase mb-8"
               >
-                Save to Database
+                Save Link
               </button>
 
               {cloudMessage && (
-                <div
-                  className={`mb-8 p-4 rounded text-sm ${cloudMessage.startsWith("Error") ? "bg-red-950/30 text-red-500 border border-red-900" : "bg-gray-900 text-white border border-gray-700"}`}
-                >
-                  {cloudMessage}
-                </div>
+                <p className="mb-8 text-sm text-blue-400">{cloudMessage}</p>
               )}
 
-              <h2 className="text-white font-bold tracking-widest uppercase mb-4 border-b border-gray-800 pb-2">
-                Saved Cloud Links
-              </h2>
               <ul className="space-y-2">
-                {cloudLinks.length === 0 ? (
-                  <li className="text-gray-600 text-sm italic">
-                    No links saved yet.
-                  </li>
-                ) : (
-                  cloudLinks.map((link) => (
-                    <li
-                      key={link.id}
-                      className="bg-gray-900 border border-gray-800 p-4 rounded flex flex-col cursor-pointer hover:bg-gray-800 transition-colors"
-                      onClick={() => handleOpenUrl(link.url)}
+                {cloudLinks.map((link) => (
+                  <li
+                    key={link.id}
+                    className="bg-gray-900 border border-gray-800 p-4 rounded flex justify-between items-center"
+                  >
+                    <span
+                      className="text-white font-bold cursor-pointer"
+                      onClick={() => openUrl(link.url)}
                     >
-                      <span className="text-white font-bold">{link.title}</span>
-                      <span className="text-gray-500 text-xs truncate mt-1">
-                        {link.url}
-                      </span>
-                    </li>
-                  ))
-                )}
+                      {link.title}
+                    </span>
+                    <button
+                      onClick={() => handleTransfer(link.url, link.title)}
+                      className="bg-blue-600 text-white text-xs px-3 py-1 rounded font-bold"
+                    >
+                      TRANSFER
+                    </button>
+                  </li>
+                ))}
               </ul>
             </div>
           )}
