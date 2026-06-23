@@ -1,5 +1,19 @@
+use serde::Serialize;
+use sqlx::Row;
+use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 use std::fs;
 use std::path::Path; //it allows me to upload files to the paht i want
+use tauri::Manager;
+
+struct DbState {
+    pool: SqlitePool,
+}
+#[derive(Serialize)]
+struct VaultFile {
+    id: i64,
+    file_name: String,
+    file_path: String,
+}
 
 // 1. THIS IS YOUR COMMAND
 #[tauri::command]
@@ -39,48 +53,123 @@ fn get_local_files(path: &str) -> Result<Vec<String>, String> {
     Ok(file_paths)
 }
 
+// Notice the 'async fn' and the new 'state' parameter!
 #[tauri::command]
-fn copy_file_to_storage(source_path: &str, destination_folder: &str) -> Result<String, String> {
-    let source = Path::new(source_path);
+async fn copy_file_to_storage(
+    source_path: String, // Changed to String for easier async handling
+    destination_folder: String,
+    state: tauri::State<'_, DbState>, // Grabbing the DB out of Tauri's memory
+) -> Result<String, String> {
+    let source = Path::new(&source_path);
 
-    // 1. Ensure the source actually exists and is a file
     if !source.is_file() {
         return Err("Source is not a valid file".to_string());
     }
 
-    // 2. Extract just the file name (e.g., "my_song.mp3") from the full path
+    // Extract the file name and save it as an owned String for the database
     let file_name = source
         .file_name()
         .ok_or("Could not extract file name")?
         .to_str()
-        .ok_or("Invalid characters in file name")?;
+        .ok_or("Invalid characters in file name")?
+        .to_string();
 
-    // 3. Safely join the destination folder with the file name
-    let dest_path = Path::new(destination_folder).join(file_name);
+    let dest_path = Path::new(&destination_folder).join(&file_name);
 
-    // 4. Create the destination folder if it doesn't exist yet!
-    // This is crucial. If the folder is missing, create_dir_all builds it.
-    if let Err(e) = fs::create_dir_all(destination_folder) {
+    if let Err(e) = fs::create_dir_all(&destination_folder) {
         return Err(format!("Failed to create destination folder: {}", e));
     }
 
-    // 5. Perform the actual file copy
+    // Perform the file copy
     match fs::copy(source, &dest_path) {
         Ok(_) => {
-            // Success! Return the NEW file path back to the frontend
-            Ok(dest_path.to_string_lossy().to_string())
+            let final_path_str = dest_path.to_string_lossy().to_string();
+
+            // --- THE NEW DATABASE HOOK ---
+            // We use standard SQL syntax and bind our variables safely to prevent SQL injection
+            let db_result =
+                sqlx::query("INSERT INTO vault_files (file_name, file_path) VALUES (?, ?)")
+                    .bind(&file_name)
+                    .bind(&final_path_str)
+                    .execute(&state.pool)
+                    .await; // We await the async database call
+
+            match db_result {
+                Ok(_) => Ok(final_path_str),
+                Err(e) => Err(format!(
+                    "File copied, but failed to save to database: {}",
+                    e
+                )),
+            }
         }
         Err(e) => Err(format!("Failed to copy file: {}", e)),
     }
-} // 2. THIS REGISTERS YOUR COMMAND
+}
+
+#[tauri::command]
+async fn get_vault_files(state: tauri::State<'_, DbState>) -> Result<Vec<VaultFile>, String> {
+    // 1. Query the database for all saved files
+    let rows = sqlx::query("SELECT id, file_name, file_path FROM vault_files")
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut files = Vec::new();
+
+    // 2. Loop through the raw rows and map them to our VaultFile struct
+    for row in rows {
+        files.push(VaultFile {
+            id: row.get("id"),
+            file_name: row.get("file_name"),
+            file_path: row.get("file_path"),
+        });
+    }
+
+    // 3. Send the packaged data back to React
+    Ok(files)
+} // 2. THIS REGISTERS The  COMMANDs
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        // ADD YOUR NEW COMMAND HERE, separated by a comma:
+        // 2. THE BOOT SEQUENCE: This runs before the UI opens
+        .setup(|app| {
+            tauri::async_runtime::block_on(async move {
+                let db_path = "sqlite:wheel.db";
+
+                // If the database file doesn't exist locally, create a blank one
+                if !Path::new("wheel.db").exists() {
+                    fs::File::create("wheel.db").expect("Failed to create wheel.db file");
+                }
+
+                // Connect to SQLite
+                let pool = SqlitePoolOptions::new()
+                    .connect(db_path)
+                    .await
+                    .expect("Failed to connect to SQLite database");
+
+                // Build our schema
+                sqlx::query(
+                    "CREATE TABLE IF NOT EXISTS vault_files (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        file_name TEXT NOT NULL,
+                        file_path TEXT NOT NULL UNIQUE
+                    );",
+                )
+                .execute(&pool)
+                .await
+                .expect("Failed to create vault_files table");
+
+                // Hand the active pool over to Tauri so our commands can use it later
+                app.manage(DbState { pool });
+            });
+
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_local_files,
-            copy_file_to_storage
+            copy_file_to_storage,
+            get_vault_files
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
