@@ -8,11 +8,19 @@ use tauri::Manager;
 struct DbState {
     pool: SqlitePool,
 }
+
 #[derive(Serialize)]
 struct VaultFile {
     id: i64,
     file_name: String,
     file_path: String,
+}
+
+#[derive(Serialize)]
+struct CloudLink {
+    id: i64,
+    title: String,
+    url: String,
 }
 
 // 1. THIS IS YOUR COMMAND
@@ -127,7 +135,72 @@ async fn get_vault_files(state: tauri::State<'_, DbState>) -> Result<Vec<VaultFi
 
     // 3. Send the packaged data back to React
     Ok(files)
-} // 2. THIS REGISTERS The  COMMANDs
+}
+
+#[tauri::command]
+async fn add_cloud_link(
+    title: String,
+    url: String,
+    state: tauri::State<'_, DbState>,
+) -> Result<String, String> {
+    // Insert the new link into our database
+    let db_result = sqlx::query("INSERT INTO cloud_links (title, url) VALUES (?, ?)")
+        .bind(&title)
+        .bind(&url)
+        .execute(&state.pool)
+        .await;
+
+    match db_result {
+        Ok(_) => Ok("Cloud link saved successfully!".to_string()),
+        Err(e) => Err(format!("Failed to save link: {}", e)),
+    }
+}
+
+#[tauri::command]
+async fn get_cloud_links(state: tauri::State<'_, DbState>) -> Result<Vec<CloudLink>, String> {
+    let rows = sqlx::query("SELECT id, title, url FROM cloud_links")
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut links = Vec::new();
+    for row in rows {
+        links.push(CloudLink {
+            id: row.get("id"),
+            title: row.get("title"),
+            url: row.get("url"),
+        });
+    }
+
+    Ok(links)
+}
+
+#[tauri::command]
+async fn delete_vault_file(
+    id: i64,
+    file_path: String,
+    state: tauri::State<'_, DbState>,
+) -> Result<String, String> {
+    // 1. Try to delete the physical file first
+    // We check if it exists so the app doesn't panic if you already deleted it manually
+    if Path::new(&file_path).exists() {
+        if let Err(e) = fs::remove_file(&file_path) {
+            return Err(format!("Failed to delete physical file: {}", e));
+        }
+    }
+
+    // 2. Delete the permanent record from the SQLite database
+    let db_result = sqlx::query("DELETE FROM vault_files WHERE id = ?")
+        .bind(id)
+        .execute(&state.pool)
+        .await;
+
+    match db_result {
+        Ok(_) => Ok("File permanently deleted.".to_string()),
+        Err(e) => Err(format!("Failed to delete from database: {}", e)),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -148,7 +221,7 @@ pub fn run() {
                     .await
                     .expect("Failed to connect to SQLite database");
 
-                // Build our schema
+                // Build our first schema
                 sqlx::query(
                     "CREATE TABLE IF NOT EXISTS vault_files (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -160,6 +233,18 @@ pub fn run() {
                 .await
                 .expect("Failed to create vault_files table");
 
+                // --- NEW: Build our second schema for cloud links ---
+                sqlx::query(
+                    "CREATE TABLE IF NOT EXISTS cloud_links (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        title TEXT NOT NULL,
+                        url TEXT NOT NULL UNIQUE
+                    );",
+                )
+                .execute(&pool)
+                .await
+                .expect("Failed to create cloud_links table");
+
                 // Hand the active pool over to Tauri so our commands can use it later
                 app.manage(DbState { pool });
             });
@@ -169,8 +254,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_local_files,
             copy_file_to_storage,
-            get_vault_files
+            get_vault_files,
+            add_cloud_link,  // <-- NEW
+            get_cloud_links, // <-- NEW
+            delete_vault_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
